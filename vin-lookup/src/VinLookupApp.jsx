@@ -89,7 +89,7 @@ function VinLookupApp() {
         });
 
         const recallRes = await fetch(
-          `http://localhost:4000/api/recalls?${params.toString()}`
+          `${API_BASE.replace(/\/$/, "")}/api/recalls?${params.toString()}`
         );
 
         if (!recallRes.ok) {
@@ -98,17 +98,18 @@ function VinLookupApp() {
           setRecallError(msg);
         } else {
           const recallJson = await recallRes.json();
-          setRecalls(recallJson.results || recallJson.Results || []);
+          const list = recallJson.results || recallJson.Results || [];
+          setRecalls(list);
         }
       } catch (recallErr) {
         console.error("Recall fetch failed:", recallErr);
         setRecallError("Recall service not available from backend.");
       }
-    } catch (err) {
-      console.error("VIN decode failed:", err);
-      setError("Error looking up VIN details. Please try again.");
-    } finally {
-      setLoading(false);
+      } catch (err) {
+        console.error("VIN decode failed:", err);
+        setError("Error looking up VIN details. Please try again.");
+      } finally {
+        setLoading(false);
     }
   };
 
