@@ -15,11 +15,13 @@ function VinLookupApp() {
 
   const isValidVin = (value) => {
     const cleaned = value.trim().toUpperCase();
-    const vinRegex = /^[A-HJ-NPR-Z0-9]{17}$/;
+    const vinRegex = /^[A-HJ-NPR-Z0-9]{17}$/; // 17 chars, no I, O, Q
     return vinRegex.test(cleaned);
   };
 
-  // CSV bulk decode helper
+  // ---- Helpers ----
+
+  // VPIC decode for single + CSV
   const decodeVinFromApi = async (vinValue) => {
     const url = `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/${vinValue}?format=json`;
     const res = await fetch(url);
@@ -45,7 +47,49 @@ function VinLookupApp() {
     };
   };
 
-  // Single VIN LOOKUP
+  // Recalls by VIN
+  const fetchRecallsByVin = async (vinValue) => {
+    const recallURL = `https://api.nhtsa.gov/recalls/recallsByVehicle?vin=${encodeURIComponent(
+      vinValue
+    )}`;
+
+    const res = await fetch(recallURL, {
+      headers: { Accept: "application/json" },
+    });
+
+    if (!res.ok) {
+      const err = new Error(`Recall by VIN HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+
+    const json = await res.json();
+    return json.results || [];
+  };
+
+  // Recalls by Year / Make / Model (fallback)
+  const fetchRecallsByYMM = async (make, model, year) => {
+    const recallURL =
+      "https://api.nhtsa.gov/recalls/recallsByVehicle?" +
+      `make=${encodeURIComponent(make.toLowerCase())}` +
+      `&model=${encodeURIComponent(model.toLowerCase())}` +
+      `&modelYear=${encodeURIComponent(String(year))}`;
+
+    const res = await fetch(recallURL, {
+      headers: { Accept: "application/json" },
+    });
+
+    if (!res.ok) {
+      const err = new Error(`Recall by YMM HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+
+    const json = await res.json();
+    return json.results || [];
+  };
+
+  // ---- Single VIN LOOKUP ----
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
@@ -61,53 +105,48 @@ function VinLookupApp() {
 
     setLoading(true);
 
-    const decodeURL = `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/${cleanedVin}?format=json`;
-    const recallURL = `https://www.nhtsa.gov/recalls?vymm=${cleanedVin}`;
-
     try {
-      const [decodeRes, recallRes] = await Promise.all([
-        fetch(decodeURL),
-        fetch(recallURL, {
-          headers: {
-            Accept: "application/json",
-          },
-        }),
-      ]);
+      // 1) DECODE VIN (VPIC)
+      const decoded = await decodeVinFromApi(cleanedVin);
 
-      if (!decodeRes.ok) throw new Error("Decode API error");
+      setData(decoded);
 
-      let recallJson = { results: [] };
+      const make = decoded.make;
+      const model = decoded.model;
+      const year = decoded.modelYear;
 
-      if (recallRes.ok) {
-        recallJson = await recallRes.json();
-      } else {
-        if (recallRes.status === 400) {
-          setRecallError(
-            "NHTSA recall service returned 400 for this VIN. No recall data is available."
-          );
+      if (!make || !model || !year || make === "N/A" || model === "N/A") {
+        setRecallError("Missing make/model/year from decode; cannot load recalls.");
+        return;
+      }
+
+      // 2) Recall by ViN (first aattempt)
+      let recallList = [];
+      try {
+        recallList = await fetchRecallsByVin(cleanedVin);
+      } catch (vinErr) {
+        console.warn("Recall by VIN failed, attempting Year/Make/Model:", vinErr);
+
+        // Only show user-friendly message on hard failures; still try YMM
+        if (vinErr.status && vinErr.status === 400) {
+          // fall back silently to YMM
         } else {
-          setRecallError(`Recall API HTTP ${recallRes.status}`);
+          // note: still fall back to YMM, but keep the final error if both fail
+        }
+
+        // 3) Recall by Year, Make and Model (Backup)
+        try {
+          recallList = await fetchRecallsByYMM(make, model, year);
+        } catch (ymmErr) {
+          console.error("Recall by YMM also failed:", ymmErr);
+          setRecallError(
+            "Unable to load recalls (VIN and Year/Make/Model lookups failed)."
+          );
+          recallList = [];
         }
       }
 
-      const decodeJson = await decodeRes.json();
-      const results = decodeJson.Results || [];
-      const getVal = (name) =>
-        results.find((r) => r.Variable === name)?.Value || "N/A";
-
-      setData({
-        vin: cleanedVin,
-        make: getVal("Make"),
-        model: getVal("Model"),
-        modelYear: getVal("Model Year"),
-        bodyClass: getVal("Body Class"),
-        engineCylinders: getVal("Engine Number of Cylinders"),
-        engineDisplacement: getVal("Displacement (in Liters)"),
-        fuelTypePrimary: getVal("Fuel Type - Primary"),
-        plantCountry: getVal("Plant Country"),
-      });
-
-      setRecalls(recallJson.results || []);
+      setRecalls(recallList);
     } catch (err) {
       console.error("VIN lookup error:", err);
       setError("Error looking up VIN details. Please try again.");
@@ -116,7 +155,7 @@ function VinLookupApp() {
     }
   };
 
-  // CSV Upload
+  // ---- CSV Upload ----
   const handleCsvUpload = (e) => {
     const file = e.target.files?.[0];
     setBulkError("");
@@ -181,7 +220,7 @@ function VinLookupApp() {
     reader.readAsText(file);
   };
 
-  // UI
+  // ---- UI ----
   return (
     <div
       style={{
@@ -296,9 +335,9 @@ function VinLookupApp() {
               {/* Recalls Found */}
               {recalls.length > 0 && (
                 <ul style={{ listStyle: "none", padding: 0 }}>
-                  {recalls.map((r) => (
+                  {recalls.map((r, idx) => (
                     <li
-                      key={r.NHTSACampaignNumber}
+                      key={r.NHTSACampaignNumber || `${idx}`}
                       style={{
                         marginBottom: "0.75rem",
                         padding: "0.75rem",
@@ -309,7 +348,7 @@ function VinLookupApp() {
                     >
                       <p style={{ margin: 0 }}>
                         <strong>NHTSA Campaign Number: </strong>
-                        {r.NHTSACampaignNumber}
+                        {r.NHTSACampaignNumber || "N/A"}
                       </p>
                     </li>
                   ))}
@@ -319,7 +358,7 @@ function VinLookupApp() {
           )}
         </section>
 
-        {/* BULK CSV */}
+        {/* Bulk CSV */}
         <section>
           <h2>Bulk CSV Lookup</h2>
 
