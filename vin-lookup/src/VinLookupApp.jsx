@@ -1,20 +1,19 @@
 import React, { useState } from "react";
 
 function VinLookupApp() {
-  
-  const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:4000";
-
   const [vin, setVin] = useState("");
+  
+  // Single Lookup State
   const [data, setData] = useState(null);
+  const [recalls, setRecalls] = useState([]);
   const [error, setError] = useState("");
+  const [recallError, setRecallError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // Bulk Lookup State
   const [bulkResults, setBulkResults] = useState([]);
   const [bulkError, setBulkError] = useState("");
   const [bulkLoading, setBulkLoading] = useState(false);
-
-  const [recalls, setRecalls] = useState([]);
-  const [recallError, setRecallError] = useState("");
 
   const isValidVin = (value) => {
     const cleaned = value.trim().toUpperCase();
@@ -22,15 +21,12 @@ function VinLookupApp() {
     return vinRegex.test(cleaned);
   };
 
+  // 1. Decode Basic Info (VPIC API)
   const decodeVinFromApi = async (vinValue) => {
     const res = await fetch(
       `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/${vinValue}?format=json`
     );
-
-    if (!res.ok) {
-      throw new Error("Network response was not ok");
-    }
-
+    if (!res.ok) throw new Error("VPIC API response not ok");
     const json = await res.json();
     const results = json.Results || [];
 
@@ -39,23 +35,34 @@ function VinLookupApp() {
 
     return {
       vin: vinValue,
-      make: extractField("Make"),
+      make: extractField("Make"), // Note: VPIC sometimes changes "Make:" to "Make"
       model: extractField("Model"),
       modelYear: extractField("Model Year"),
       bodyClass: extractField("Body Class"),
       engineCylinders: extractField("Engine Number of Cylinders"),
-      engineDisplacement: extractField("Displacement (L)"),
+      engineDisplacement: extractField("Displacement (in Liters)"),
       fuelTypePrimary: extractField("Fuel Type - Primary"),
       plantCountry: extractField("Plant Country"),
     };
   };
 
+  // 2. Fetch Recalls directly by VIN (NHTSA Recall API)
+  const fetchRecallsByVin = async (vinValue) => {
+    const res = await fetch(
+      `https://api.nhtsa.gov/recalls/recallsByVehicle?vin=${vinValue}`
+    );
+    if (!res.ok) throw new Error("Recall API response not ok");
+    const json = await res.json();
+    // The endpoint returns lowercase 'results' usually
+    return json.results || [];
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+    setRecallError("");
     setData(null);
     setRecalls([]);
-    setRecallError("");
 
     const trimmedVin = vin.trim().toUpperCase();
 
@@ -67,49 +74,32 @@ function VinLookupApp() {
     setLoading(true);
 
     try {
-      // 1) Decode basic vehicle info from NHTSA
-      const decoded = await decodeVinFromApi(trimmedVin);
-      setData(decoded);
+      // Run both fetch requests in parallel for speed
+      const [decodedData, recallData] = await Promise.all([
+        decodeVinFromApi(trimmedVin).catch((err) => {
+          console.error("Decode Error:", err);
+          throw new Error("Could not decode vehicle details.");
+        }),
+        fetchRecallsByVin(trimmedVin).catch((err) => {
+          console.error("Recall Error:", err);
+          // Return null so we can show a specific recall error without crashing the main app
+          return null; 
+        }),
+      ]);
 
-      const makeForRecalls = decoded.make;
-      const modelForRecalls = decoded.model;
-      const yearForRecalls = decoded.modelYear;
+      setData(decodedData);
 
-      if (!makeForRecalls || !modelForRecalls || !yearForRecalls) {
-        setRecallError("Missing make/model/year; cannot load recalls.");
-        return;
+      if (recallData === null) {
+        setRecallError("Could not fetch recall data at this time.");
+      } else {
+        setRecalls(recallData);
       }
 
-      // 2) Fetch recalls from backend using Year / Make / Model
-      try {
-        const params = new URLSearchParams({
-          make: makeForRecalls,
-          model: modelForRecalls,
-          year: String(yearForRecalls),
-        });
-
-        const recallRes = await fetch(
-          `${API_BASE.replace(/\/$/, "")}/api/recalls?${params.toString()}`
-        );
-
-        if (!recallRes.ok) {
-          const msg = `Recall API HTTP ${recallRes.status}`;
-          console.error(msg);
-          setRecallError(msg);
-        } else {
-          const recallJson = await recallRes.json();
-          const list = recallJson.results || recallJson.Results || [];
-          setRecalls(list);
-        }
-      } catch (recallErr) {
-        console.error("Recall fetch failed:", recallErr);
-        setRecallError("Recall service not available from backend.");
-      }
-      } catch (err) {
-        console.error("VIN decode failed:", err);
-        setError("Error looking up VIN details. Please try again.");
-      } finally {
-        setLoading(false);
+    } catch (err) {
+      console.error(err);
+      setError(err.message || "Error processing request.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -139,46 +129,39 @@ function VinLookupApp() {
         return;
       }
 
+      // Limit to 50 for demo purposes
       const limitedVins = vins.slice(0, 50);
-
-      const invalidVins = limitedVins.filter((v) => !isValidVin(v));
-      if (invalidVins.length > 0) {
-        setBulkError(
-          `Some VINs are invalid: ${invalidVins
-            .slice(0, 5)
-            .join(", ")}${invalidVins.length > 5 ? "..." : ""}`
-        );
-      }
-
       const validVins = limitedVins.filter((v) => isValidVin(v));
+
       if (validVins.length === 0) {
+        setBulkError("No valid VINs found in the selection.");
         return;
       }
 
       setBulkLoading(true);
       try {
         const promises = validVins.map((v) =>
-          decodeVinFromApi(v).catch((err) => {
-            console.error(err);
-            return { vin: v, make: "Error", model: "-", modelYear: "-" };
-          })
+          decodeVinFromApi(v).catch(() => ({
+            vin: v,
+            make: "Error",
+            model: "-",
+            modelYear: "-",
+          }))
         );
         const results = await Promise.all(promises);
         setBulkResults(results);
       } catch (err) {
-        console.error(err);
-        setBulkError("Error processing CSV VINs. Please try again.");
+        setBulkError("Error processing CSV.");
       } finally {
         setBulkLoading(false);
       }
     };
-
-    reader.onerror = () => {
-      setBulkError("Error reading file. Please try another CSV.");
-    };
-
     reader.readAsText(file);
   };
+
+  // Helper for external links
+  const googleLink = `https://www.google.com/search?q="${vin}" site:cargurus.com OR site:autotrader.com OR site:cars.com`;
+  const waybackLink = `https://web.archive.org/web/*/autotrader.com/*${vin}`;
 
   return (
     <div
@@ -189,7 +172,6 @@ function VinLookupApp() {
         color: "#e5e7eb",
         display: "flex",
         justifyContent: "center",
-        alignItems: "flex-start",
         padding: "2rem 1.5rem",
       }}
     >
@@ -205,309 +187,294 @@ function VinLookupApp() {
         }}
       >
         <h1 style={{ fontSize: "1.9rem", marginBottom: "0.5rem" }}>
-          VIN Lookup
+          VIN Lookup & Recall Check
         </h1>
-        <p style={{ marginBottom: "1.25rem", color: "#9ca3af" }}>
-          Type a valid VIN <strong>or</strong> upload a{" "}
-          <strong>comma-separated value (.csv) file</strong> with multiple VINs.
+        <p style={{ marginBottom: "1.5rem", color: "#9ca3af" }}>
+          Powered by NHTSA Public API
         </p>
 
-        {/* Single VIN section */}
+        {/* Single VIN Input */}
         <section
           style={{
             marginBottom: "2rem",
             padding: "1rem",
             borderRadius: "0.75rem",
-            background: "#020617",
+            background: "#0f172a",
             border: "1px solid #374151",
           }}
         >
-          <h2 style={{ fontSize: "1.2rem", marginBottom: "0.75rem" }}>
-            Single VIN Lookup
-          </h2>
-          <form onSubmit={handleSubmit} style={{ marginBottom: "1rem" }}>
+          <form onSubmit={handleSubmit}>
             <label
               htmlFor="vin"
-              style={{
-                display: "block",
-                fontSize: "0.9rem",
-                marginBottom: 4,
-              }}
+              style={{ display: "block", fontSize: "0.9rem", marginBottom: 4 }}
             >
-              VIN
+              Enter VIN (17 Characters)
             </label>
-            <input
-              id="vin"
-              type="text"
-              value={vin}
-              onChange={(e) => setVin(e.target.value.toUpperCase())}
-              placeholder="e.g. 1HGCM82633A004352"
-              maxLength={17}
-              style={{
-                width: "100%",
-                padding: "0.6rem 0.75rem",
-                borderRadius: "0.5rem",
-                border: "1px solid #4b5563",
-                background: "#020617",
-                color: "#e5e7eb",
-                fontSize: "0.95rem",
-                outline: "none",
-              }}
-            />
-            <button
-              type="submit"
-              disabled={loading}
-              style={{
-                marginTop: "0.75rem",
-                padding: "0.55rem 1.25rem",
-                borderRadius: "999px",
-                border: "none",
-                background:
-                  "linear-gradient(135deg, #06b6d4 0%, #3b82f6 50%, #8b5cf6 100%)",
-                color: "#0b1120",
-                fontWeight: 600,
-                cursor: loading ? "wait" : "pointer",
-                fontSize: "0.95rem",
-              }}
-            >
-              {loading ? "Looking up…" : "Decode VIN"}
-            </button>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <input
+                id="vin"
+                type="text"
+                value={vin}
+                onChange={(e) => setVin(e.target.value.toUpperCase())}
+                placeholder="e.g. 1HGCM82633A004352"
+                maxLength={17}
+                style={{
+                  flex: 1,
+                  padding: "0.6rem 0.75rem",
+                  borderRadius: "0.5rem",
+                  border: "1px solid #4b5563",
+                  background: "#1e293b",
+                  color: "#fff",
+                  outline: "none",
+                }}
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                style={{
+                  padding: "0.6rem 1.5rem",
+                  borderRadius: "0.5rem",
+                  border: "none",
+                  background:
+                    "linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%)",
+                  color: "#fff",
+                  fontWeight: 600,
+                  cursor: loading ? "wait" : "pointer",
+                }}
+              >
+                {loading ? "Searching..." : "Search"}
+              </button>
+            </div>
           </form>
 
           {error && (
             <div
               style={{
-                marginBottom: "1rem",
+                marginTop: "1rem",
                 padding: "0.75rem",
                 borderRadius: "0.5rem",
                 background: "#450a0a",
                 color: "#fecaca",
-                fontSize: "0.9rem",
               }}
             >
               {error}
             </div>
           )}
-
-          {data && (
-            <div
-              style={{
-                marginTop: "0.5rem",
-                padding: "1rem",
-                borderRadius: "0.75rem",
-                background: "#020617",
-                border: "1px solid #374151",
-              }}
-            >
-              <h3 style={{ marginBottom: "0.5rem", fontSize: "1.05rem" }}>
-                Decoded Vehicle Info
-              </h3>
-              <p style={{ fontSize: "0.85rem", color: "#9ca3af" }}>
-                VIN: <span style={{ color: "#e5e7eb" }}>{data.vin}</span>
-              </p>
-              <hr
-                style={{
-                  margin: "0.75rem 0",
-                  borderColor: "#111827",
-                  opacity: 0.6,
-                }}
-              />
-              <dl
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  columnGap: "1.5rem",
-                  rowGap: "0.4rem",
-                  fontSize: "0.9rem",
-                }}
-              >
-                <div>
-                  <dt style={{ color: "#9ca3af" }}>Make</dt>
-                  <dd>{data.make}</dd>
-                </div>
-                <div>
-                  <dt style={{ color: "#9ca3af" }}>Model</dt>
-                  <dd>{data.model}</dd>
-                </div>
-                <div>
-                  <dt style={{ color: "#9ca3af" }}>Model Year</dt>
-                  <dd>{data.modelYear}</dd>
-                </div>
-                <div>
-                  <dt style={{ color: "#9ca3af" }}>Body Class</dt>
-                  <dd>{data.bodyClass}</dd>
-                </div>
-                <div>
-                  <dt style={{ color: "#9ca3af" }}>Engine Cylinders</dt>
-                  <dd>{data.engineCylinders}</dd>
-                </div>
-                <div>
-                  <dt style={{ color: "#9ca3af" }}>Engine Displacement (L)</dt>
-                  <dd>{data.engineDisplacement}</dd>
-                </div>
-                <div>
-                  <dt style={{ color: "#9ca3af" }}>Fuel Type</dt>
-                  <dd>{data.fuelTypePrimary}</dd>
-                </div>
-                <div>
-                  <dt style={{ color: "#9ca3af" }}>Plant Country</dt>
-                  <dd>{data.plantCountry}</dd>
-                </div>
-              </dl>
-
-              {/* Recalls section */}
-              <div
-                style={{
-                  marginTop: "1rem",
-                  paddingTop: "0.75rem",
-                  borderTop: "1px solid #111827",
-                }}
-              >
-                <h4 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>
-                  Safety Recalls
-                </h4>
-
-                {recallError && (
-                  <p style={{ fontSize: "0.85rem", color: "#fecaca" }}>
-                    {recallError}
-                  </p>
-                )}
-
-                {!recallError && recalls.length === 0 && (
-                  <p style={{ fontSize: "0.85rem", color: "#9ca3af" }}>
-                    No recalls found for this VIN in the NHTSA database.
-                  </p>
-                )}
-
-                {!recallError && recalls.length > 0 && (
-                  <ul
-                    style={{
-                      listStyle: "none",
-                      margin: 0,
-                      padding: 0,
-                      maxHeight: "350px",
-                      overflowY: "auto",
-                    }}
-                  >
-                    {recalls.map((recall) => (
-                      <li
-                        key={recall.NHTSACampaignNumber}
-                        style={{
-                          marginBottom: "0.75rem",
-                          padding: "0.75rem",
-                          background: "#020617",
-                          border: "1px solid #374151",
-                          borderRadius: "0.5rem",
-                        }}
-                      >
-                        <div
-                          style={{
-                            fontSize: "0.8rem",
-                            color: "#9ca3af",
-                            marginBottom: "0.25rem",
-                            display: "flex",
-                            justifyContent: "space-between",
-                          }}
-                        >
-                          <span>
-                            Campaign: {recall.NHTSACampaignNumber}
-                          </span>
-                          <span>{recall.ReportReceivedDate || "N/A"}</span>
-                        </div>
-
-                        <div style={{ fontSize: "0.9rem", fontWeight: 600 }}>
-                          {recall.Component}
-                        </div>
-
-                        <div
-                          style={{
-                            fontSize: "0.8rem",
-                            marginTop: "0.25rem",
-                            color: "#d1d5db",
-                          }}
-                        >
-                          {recall.Summary}
-                        </div>
-
-                        <div
-                          style={{
-                            fontSize: "0.8rem",
-                            marginTop: "0.4rem",
-                            color: "#9ca3af",
-                          }}
-                        >
-                          MFR Recall No:{" "}
-                          <span style={{ color: "#e5e7eb" }}>
-                            {recall.ManufacturerRecallNo || "N/A"}
-                          </span>
-                        </div>
-
-                        <div
-                          style={{
-                            fontSize: "0.8rem",
-                            color: "#9ca3af",
-                          }}
-                        >
-                          Initiator:{" "}
-                          <span style={{ color: "#e5e7eb" }}>
-                            {recall.RecallInitiator || "N/A"}
-                          </span>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          )}
         </section>
 
-        {/* CSV Upload section */}
+        {/* Results Section */}
+        {data && (
+          <div
+            style={{
+              marginBottom: "2rem",
+              padding: "1.5rem",
+              borderRadius: "0.75rem",
+              background: "#1e293b",
+              border: "1px solid #374151",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                flexWrap: "wrap",
+                gap: "1rem",
+                marginBottom: "1rem",
+              }}
+            >
+              <div>
+                <h2 style={{ fontSize: "1.5rem", margin: 0 }}>
+                  {data.modelYear} {data.make} {data.model}
+                </h2>
+                <p style={{ color: "#9ca3af", margin: "0.25rem 0 0" }}>
+                  VIN: {data.vin}
+                </p>
+              </div>
+
+              {/* External Search Links (Added from reference) */}
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <a
+                  href={googleLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    fontSize: "0.85rem",
+                    padding: "0.4rem 0.8rem",
+                    borderRadius: "4px",
+                    background: "#0f172a",
+                    color: "#38bdf8",
+                    textDecoration: "none",
+                    border: "1px solid #334155",
+                  }}
+                >
+                  Google Search
+                </a>
+                <a
+                  href={waybackLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    fontSize: "0.85rem",
+                    padding: "0.4rem 0.8rem",
+                    borderRadius: "4px",
+                    background: "#0f172a",
+                    color: "#38bdf8",
+                    textDecoration: "none",
+                    border: "1px solid #334155",
+                  }}
+                >
+                  Wayback Machine
+                </a>
+              </div>
+            </div>
+
+            <hr style={{ borderColor: "#334155", margin: "1rem 0" }} />
+
+            {/* Vehicle Specs */}
+            <dl
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+                gap: "1rem",
+                fontSize: "0.9rem",
+              }}
+            >
+              <div>
+                <dt style={{ color: "#9ca3af" }}>Body Class</dt>
+                <dd>{data.bodyClass}</dd>
+              </div>
+              <div>
+                <dt style={{ color: "#9ca3af" }}>Engine</dt>
+                <dd>
+                  {data.engineCylinders} Cyl / {data.engineDisplacement}L
+                </dd>
+              </div>
+              <div>
+                <dt style={{ color: "#9ca3af" }}>Fuel Type</dt>
+                <dd>{data.fuelTypePrimary}</dd>
+              </div>
+              <div>
+                <dt style={{ color: "#9ca3af" }}>Plant Country</dt>
+                <dd>{data.plantCountry}</dd>
+              </div>
+            </dl>
+
+            {/* Recalls Section */}
+            <div
+              style={{
+                marginTop: "1.5rem",
+                paddingTop: "1.5rem",
+                borderTop: "1px solid #334155",
+              }}
+            >
+              <h3 style={{ fontSize: "1.1rem", marginBottom: "0.5rem" }}>
+                Safety Recalls ({recalls.length})
+              </h3>
+
+              {recallError ? (
+                <p style={{ color: "#fca5a5" }}>{recallError}</p>
+              ) : recalls.length === 0 ? (
+                <p style={{ color: "#86efac" }}>
+                  No open recalls found for this specific VIN.
+                </p>
+              ) : (
+                <ul
+                  style={{
+                    listStyle: "none",
+                    padding: 0,
+                    margin: 0,
+                    display: "grid",
+                    gap: "1rem",
+                  }}
+                >
+                  {recalls.map((recall, idx) => (
+                    <li
+                      key={idx}
+                      style={{
+                        background: "#0f172a",
+                        padding: "1rem",
+                        borderRadius: "0.5rem",
+                        border: "1px solid #334155",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          marginBottom: "0.5rem",
+                          fontSize: "0.85rem",
+                          color: "#9ca3af",
+                        }}
+                      >
+                        <span>
+                          <strong>Campaign:</strong>{" "}
+                          {recall.NHTSACampaignNumber || recall.nhtsaCampaignNumber}
+                        </span>
+                        <span>
+                          {recall.ReportReceivedDate || recall.reportReceivedDate}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          fontWeight: "bold",
+                          marginBottom: "0.25rem",
+                          color: "#f8fafc",
+                        }}
+                      >
+                        {recall.Component || recall.component}
+                      </div>
+                      <p
+                        style={{
+                          fontSize: "0.9rem",
+                          color: "#cbd5e1",
+                          margin: 0,
+                          lineHeight: "1.5",
+                        }}
+                      >
+                        {recall.Summary || recall.summary}
+                      </p>
+                      {/* Consequence if available */}
+                      {(recall.Consequence || recall.consequence) && (
+                        <p
+                          style={{
+                            fontSize: "0.85rem",
+                            color: "#fca5a5",
+                            marginTop: "0.5rem",
+                          }}
+                        >
+                          <strong>Consequence:</strong>{" "}
+                          {recall.Consequence || recall.consequence}
+                        </p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Bulk Upload Section */}
         <section
           style={{
             padding: "1rem",
             borderRadius: "0.75rem",
-            background: "#020617",
+            background: "#0f172a",
             border: "1px solid #374151",
           }}
         >
-          <h2 style={{ fontSize: "1.2rem", marginBottom: "0.5rem" }}>
-            Bulk Lookup from CSV
+          <h2 style={{ fontSize: "1.1rem", marginBottom: "0.5rem" }}>
+            Bulk Lookup (CSV)
           </h2>
-          <p style={{ fontSize: "0.85rem", color: "#9ca3af", marginBottom: 8 }}>
-            Upload a <strong>.csv</strong> file with VINs separated by commas or
-            new lines. (Example: <code>VIN1,VIN2,VIN3</code> or one VIN per
-            line.)
-          </p>
-
           <input
             type="file"
             accept=".csv"
             onChange={handleCsvUpload}
-            style={{ marginTop: "0.5rem" }}
+            style={{ color: "#9ca3af" }}
           />
-
-          {bulkError && (
-            <div
-              style={{
-                marginTop: "0.75rem",
-                padding: "0.75rem",
-                borderRadius: "0.5rem",
-                background: "#450a0a",
-                color: "#fecaca",
-                fontSize: "0.9rem",
-              }}
-            >
-              {bulkError}
-            </div>
-          )}
-
-          {bulkLoading && (
-            <p style={{ marginTop: "0.75rem", fontSize: "0.9rem" }}>
-              Processing VINs…
-            </p>
-          )}
-
+          {bulkLoading && <p>Processing...</p>}
+          {bulkError && <p style={{ color: "#fca5a5" }}>{bulkError}</p>}
           {bulkResults.length > 0 && (
             <div style={{ marginTop: "1rem", overflowX: "auto" }}>
               <table
@@ -515,83 +482,24 @@ function VinLookupApp() {
                   width: "100%",
                   borderCollapse: "collapse",
                   fontSize: "0.85rem",
+                  textAlign: "left",
                 }}
               >
                 <thead>
-                  <tr>
-                    <th
-                      style={{
-                        borderBottom: "1px solid #4b5563",
-                        textAlign: "left",
-                        padding: "0.4rem",
-                      }}
-                    >
-                      VIN
-                    </th>
-                    <th
-                      style={{
-                        borderBottom: "1px solid #4b5563",
-                        textAlign: "left",
-                        padding: "0.4rem",
-                      }}
-                    >
-                      Make
-                    </th>
-                    <th
-                      style={{
-                        borderBottom: "1px solid #4b5563",
-                        textAlign: "left",
-                        padding: "0.4rem",
-                      }}
-                    >
-                      Model
-                    </th>
-                    <th
-                      style={{
-                        borderBottom: "1px solid #4b5563",
-                        textAlign: "left",
-                        padding: "0.4rem",
-                      }}
-                    >
-                      Year
-                    </th>
+                  <tr style={{ color: "#9ca3af" }}>
+                    <th style={{ padding: "0.5rem" }}>VIN</th>
+                    <th style={{ padding: "0.5rem" }}>Make</th>
+                    <th style={{ padding: "0.5rem" }}>Model</th>
+                    <th style={{ padding: "0.5rem" }}>Year</th>
                   </tr>
                 </thead>
                 <tbody>
                   {bulkResults.map((r) => (
-                    <tr key={r.vin}>
-                      <td
-                        style={{
-                          borderBottom: "1px solid #111827",
-                          padding: "0.4rem",
-                        }}
-                      >
-                        {r.vin}
-                      </td>
-                      <td
-                        style={{
-                          borderBottom: "1px solid #111827",
-                          padding: "0.4rem",
-                        }}
-                      >
-                        {r.make}
-                      </td>
-                      <td
-                        style={{
-                          borderBottom: "1px solid #111827",
-                          padding: "0.4rem",
-                        }}
-                      >
-                        {r.model}
-                      </td>
-                      <td
-                        style={{
-                          borderBottom: "1px solid #111827",
-                          padding: "0.4rem",
-                        }}
-                      >
-                        {r.modelYear}
-                      </td>
+                    <tr key={r.vin} style={{ borderTop: "1px solid #334155" }}>
+                      <td style={{ padding: "0.5rem" }}>{r.vin}</td>
+                      <td style={{ padding: "0.5rem" }}>{r.make}</td>
+                      <td style={{ padding: "0.5rem" }}>{r.model}</td>
+                      <td style={{ padding: "0.5rem" }}>{r.modelYear}</td>
                     </tr>
                   ))}
                 </tbody>
