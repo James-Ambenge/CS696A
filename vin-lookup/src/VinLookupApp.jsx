@@ -67,15 +67,30 @@ function VinLookupApp() {
     try {
       const [decodeRes, recallRes] = await Promise.all([
         fetch(decodeURL),
-        fetch(recallURL),
+        fetch(recallURL, {
+          headers: {
+            Accept: "application/json",
+          },
+        }),
       ]);
 
       if (!decodeRes.ok) throw new Error("Decode API error");
-      if (!recallRes.ok) setRecallError(`Recall API HTTP ${recallRes.status}`);
+
+      let recallJson = { results: [] };
+
+      if (recallRes.ok) {
+        recallJson = await recallRes.json();
+      } else {
+        if (recallRes.status === 400) {
+          setRecallError(
+            "NHTSA recall service returned 400 for this VIN. No recall data is available."
+          );
+        } else {
+          setRecallError(`Recall API HTTP ${recallRes.status}`);
+        }
+      }
 
       const decodeJson = await decodeRes.json();
-      const recallJson = recallRes.ok ? await recallRes.json() : { results: [] };
-
       const results = decodeJson.Results || [];
       const getVal = (name) =>
         results.find((r) => r.Variable === name)?.Value || "N/A";
@@ -263,9 +278,7 @@ function VinLookupApp() {
                 <p>Plant Country: {data.plantCountry}</p>
               </div>
 
-              {/* --------------  
-                  SAFETY RECALLS  
-                  -------------- */}
+              {/* SAFETY RECALLS */}
               <h3 style={{ marginTop: "1rem" }}>Safety Recalls</h3>
 
               {/* No recalls */}
