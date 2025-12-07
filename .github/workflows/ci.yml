@@ -2,45 +2,37 @@ name: CI - VIN Lookup
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+    paths:
+      - "vin-lookup/**"
+      - ".github/workflows/ci.yml"
   pull_request:
-    branches: [ main ]
-
+    branches: [main]
+    paths:
+      - "vin-lookup/**"
+      - ".github/workflows/ci.yml"
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        project:
-          - vin-lookup
-          - vin-api-server
-
     defaults:
       run:
-        working-directory: ${{ matrix.project }}
+        working-directory: vin-lookup
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Use Node.js 20
+      - name: Use Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
+          cache-dependency: vin-lookup/package-lock.json
+
       - name: Install dependencies
         run: npm ci
 
-      # Add tests later if you want:
-      # - name: Run tests
-      #   run: npm test
-
-      - name: Build (if script exists)
-        run: |
-          if npm run | grep -q "build"; then
-            npm run build
-          else
-            echo "No build script for ${{ matrix.project }}, skipping."
-          fi
+      - name: Build
+        run: npm run build
