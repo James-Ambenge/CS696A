@@ -21,7 +21,7 @@ function VinLookupApp() {
 
   // ---- Helpers ----
 
-   // Format NHTSA Campaign Number to first 6 characters
+  // Format NHTSA Campaign Number to first 6 characters
   const formatCampaignNumber = (campaign) => {
     if (!campaign) return "N/A";
     const str = String(campaign);
@@ -133,7 +133,9 @@ function VinLookupApp() {
       const year = decoded.modelYear;
 
       if (!make || !model || !year || make === "N/A" || model === "N/A") {
-        setRecallError("Missing make/model/year from decode; cannot load recalls.");
+        setRecallError(
+          "Missing make/model/year from decode; cannot load recalls."
+        );
         return;
       }
 
@@ -155,7 +157,9 @@ function VinLookupApp() {
         }
       }
 
-      setRecalls(recallList);
+      // Sort recalls in descending order
+      const sortedRecalls = sortRecallsDescending(recallList);
+      setRecalls(sortedRecalls);
     } catch (err) {
       console.error("VIN lookup error:", err);
       setError("Error looking up VIN details. Please try again.");
@@ -357,7 +361,7 @@ function VinLookupApp() {
                     >
                       <p style={{ margin: 0 }}>
                         <strong>NHTSA Campaign Number: </strong>
-                        {r.NHTSACampaignNumber || "N/A"}
+                        {formatCampaignNumber(r.NHTSACampaignNumber)}
                       </p>
                     </li>
                   ))}
