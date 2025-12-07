@@ -71,8 +71,8 @@ function VinLookupApp() {
   const fetchRecallsByYMM = async (make, model, year) => {
     const recallURL =
       "https://api.nhtsa.gov/recalls/recallsByVehicle?" +
-      `make=${encodeURIComponent(make.toLowerCase())}` +
-      `&model=${encodeURIComponent(model.toLowerCase())}` +
+      `make=${encodeURIComponent(String(make).toLowerCase())}` +
+      `&model=${encodeURIComponent(String(model).toLowerCase())}` +
       `&modelYear=${encodeURIComponent(String(year))}`;
 
     const res = await fetch(recallURL, {
@@ -108,7 +108,6 @@ function VinLookupApp() {
     try {
       // 1) DECODE VIN (VPIC)
       const decoded = await decodeVinFromApi(cleanedVin);
-
       setData(decoded);
 
       const make = decoded.make;
@@ -120,28 +119,20 @@ function VinLookupApp() {
         return;
       }
 
-      // 2) Recall by ViN (first aattempt)
       let recallList = [];
+
+      // 2) TRY RECALLS BY VIN FIRST
       try {
         recallList = await fetchRecallsByVin(cleanedVin);
       } catch (vinErr) {
         console.warn("Recall by VIN failed, attempting Year/Make/Model:", vinErr);
 
-        // Only show user-friendly message on hard failures; still try YMM
-        if (vinErr.status && vinErr.status === 400) {
-          // fall back silently to YMM
-        } else {
-          // note: still fall back to YMM, but keep the final error if both fail
-        }
-
-        // 3) Recall by Year, Make and Model (Backup)
+        // 3) FALL BACK TO YEAR / MAKE / MODEL
         try {
           recallList = await fetchRecallsByYMM(make, model, year);
         } catch (ymmErr) {
           console.error("Recall by YMM also failed:", ymmErr);
-          setRecallError(
-            "Unable to load recalls (VIN and Year/Make/Model lookups failed)."
-          );
+          setRecallError("Unable to load recalls at this time.");
           recallList = [];
         }
       }
@@ -358,7 +349,7 @@ function VinLookupApp() {
           )}
         </section>
 
-        {/* Bulk CSV */}
+        {/* BULK CSV */}
         <section>
           <h2>Bulk CSV Lookup</h2>
 
