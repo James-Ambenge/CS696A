@@ -21,6 +21,24 @@ function VinLookupApp() {
 
   // ---- Helpers ----
 
+   // Format NHTSA Campaign Number to first 6 characters
+  const formatCampaignNumber = (campaign) => {
+    if (!campaign) return "N/A";
+    const str = String(campaign);
+    return str.length <= 6 ? str : str.slice(0, 6);
+  };
+
+  // Sort recalls in descending order by NHTSACampaignNumber
+  const sortRecallsDescending = (recallArray) => {
+    if (!Array.isArray(recallArray)) return [];
+    const normalize = (c) => (c ? String(c) : "");
+    return [...recallArray].sort((a, b) =>
+      normalize(b.NHTSACampaignNumber).localeCompare(
+        normalize(a.NHTSACampaignNumber)
+      )
+    );
+  };
+
   // VPIC decode for single + CSV
   const decodeVinFromApi = async (vinValue) => {
     const url = `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/${vinValue}?format=json`;
