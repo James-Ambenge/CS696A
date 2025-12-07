@@ -1,6 +1,9 @@
 import React, { useState } from "react";
 
 function VinLookupApp() {
+  
+  const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:4000";
+
   const [vin, setVin] = useState("");
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
