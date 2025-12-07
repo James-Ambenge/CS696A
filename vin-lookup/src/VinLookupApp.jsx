@@ -62,7 +62,7 @@ function VinLookupApp() {
     setLoading(true);
 
     const decodeURL = `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/${cleanedVin}?format=json`;
-    const recallURL = `https://api.nhtsa.gov/recalls/recallsByVehicle?vin=${cleanedVin}`;
+    const recallURL = `https://www.nhtsa.gov/recalls?vymm=${cleanedVin}`;
 
     try {
       const [decodeRes, recallRes] = await Promise.all([
